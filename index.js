@@ -1,292 +1,484 @@
-// ---------- FSG WATCHER (Main Bot File) ----------
+// index.js - FSG WATCHER PRO
 
-// Imports
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField } = require("discord.js");
+const { 
+  Client, 
+  GatewayIntentBits, 
+  Partials, 
+  EmbedBuilder, 
+  PermissionsBitField, 
+  Collection 
+} = require("discord.js");
 const mongoose = require("mongoose");
 const express = require("express");
-const ms = require("ms");
 require("dotenv").config();
 
-// Create an Express web server (keeps bot alive)
 const app = express();
-app.get("/", (req, res) => res.send("✅ FSG Watcher is running!"));
-app.listen(3000, () => console.log("🌐 Express server active on port 3000"));
+app.get("/", (req, res) => res.send("Bot is alive"));
+app.listen(3000, () => console.log("✅ Express active on port 3000"));
 
-// Create Discord client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildModeration
+    GatewayIntentBits.GuildMessageReactions
   ],
-  partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || "", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(() => console.log("✅ Connected to MongoDB"))
-  .catch(err => console.error("❌ MongoDB Connection Error:", err));
+client.commands = new Collection();
+// ---------------- CONFIG (Part 2) ----------------
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID || "";
+const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || "";
+const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || "";
+const MOD_ROLE_ID = process.env.MOD_ROLE_ID || "";
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID || "";
+const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID || "";
+const BANLOG_CHANNEL = process.env.BANLOG_CHANNEL || "";
+const MESSAGELOG_CHANNEL = process.env.MESSAGELOG_CHANNEL || "";
+const MEMBERLOG_CHANNEL = process.env.MEMBERLOG_CHANNEL || "";
+const GIVEAWAY_CHANNELS = process.env.GIVEAWAY_CHANNELS ? process.env.GIVEAWAY_CHANNELS.split(",") : [];
+const MONGODB_URI = process.env.MONGODB_URI || "";
 
-// Bot ready event
-client.once("ready", () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  client.user.setActivity("FSG Watcher | /help", { type: 2 });
-});
-// ==========================
-// FSG WATCHER - Part 2
-// ==========================
+// ---------------- MONGODB CONNECT ----------------
+if (MONGODB_URI) {
+  mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log("✅ MongoDB connected"))
+    .catch((e) => console.error("Mongo connection error:", e));
+}
+
+// ---------------- JSON STORAGE ----------------
+const fs = require("fs");
+const path = require("path");
+const dataDir = path.join(__dirname, "data");
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+
+function readJSON(file) {
+  try { return JSON.parse(fs.readFileSync(path.join(dataDir, file + ".json"))); }
+  catch { return {}; }
+}
+function writeJSON(file, data) {
+  fs.writeFileSync(path.join(dataDir, file + ".json"), JSON.stringify(data, null, 2));
+}
+
+let messageCounts = readJSON("messages");
+
+// ---------------- SCHEMAS ----------------
+let GiveawayModel = null;
+let WarningModel = null;
+
+if (MONGODB_URI) {
+  const gSchema = new mongoose.Schema({
+    messageId: String,
+    channelId: String,
+    prize: String,
+    winners: Number,
+    endsAt: Date,
+    hostId: String,
+    roleRequired: String,
+    extraRole: String
+  });
+  GiveawayModel = mongoose.models.Giveaway || mongoose.model("Giveaway", gSchema);
+
+  const wSchema = new mongoose.Schema({
+    guildId: String,
+    userId: String,
+    modId: String,
+    reason: String,
+    timestamp: Date
+  });
+  WarningModel = mongoose.models.Warning || mongoose.model("Warning", wSchema);
+}
+
+// ---------------- HELPERS (re-usable) ----------------
+function hasRole(member, roleId) { return roleId && member && member.roles.cache.has(roleId); }
+function isOwner(member) { return hasRole(member, OWNER_ROLE_ID); }
+function isAdmin(member) { return member.permissions?.has(PermissionsBitField.Flags.Administrator) || hasRole(member, ADMIN_ROLE_ID); }
+function isMod(member) { return isAdmin(member) || hasRole(member, MOD_ROLE_ID); }
+function isStaff(member) { return isMod(member) || hasRole(member, STAFF_ROLE_ID); }
+
+async function sendLog(channelId, content) {
+  try {
+    if (!channelId) return;
+    const ch = await client.channels.fetch(channelId).catch(()=>null);
+    if (ch) await ch.send(content).catch(()=>{});
+  } catch {}
+}
+
+function pickWinners(participants, count) {
+  const pool = Array.from(participants);
+  const winners = [];
+  while (winners.length < count && pool.length > 0) {
+    winners.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  return winners;
+}
 
 // ---------------- REGISTER SLASH COMMANDS ----------------
-const {
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  PermissionsBitField,
-  EmbedBuilder
-} = require("discord.js");
+const { REST, Routes, SlashCommandBuilder } = require("discord.js");
 
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder().setName("ping").setDescription("Check bot latency"),
-
     new SlashCommandBuilder()
       .setName("gstart")
       .setDescription("Start a giveaway")
-      .addStringOption(o => o.setName("duration").setDescription("Duration (e.g. 1h)").setRequired(true))
+      .addStringOption(o => o.setName("duration").setDescription("Duration e.g. 1h").setRequired(true))
       .addIntegerOption(o => o.setName("winners").setDescription("Number of winners").setRequired(true))
       .addStringOption(o => o.setName("prize").setDescription("Prize").setRequired(true))
-      .addRoleOption(o => o.setName("role_required").setDescription("Role required to join"))
-      .addRoleOption(o => o.setName("extra_entries").setDescription("Role with extra entries")),
-
-    new SlashCommandBuilder()
-      .setName("ban")
-      .setDescription("Ban a user")
+      .addRoleOption(o => o.setName("role_required").setDescription("Role required to enter"))
+      .addRoleOption(o => o.setName("extra_entries").setDescription("Role for extra entries")),
+    new SlashCommandBuilder().setName("ban").setDescription("Ban a user")
       .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
       .addStringOption(o => o.setName("reason").setDescription("Reason")),
-
-    new SlashCommandBuilder()
-      .setName("kick")
-      .setDescription("Kick a user")
+    new SlashCommandBuilder().setName("kick").setDescription("Kick a user")
       .addUserOption(o => o.setName("user").setDescription("User to kick").setRequired(true))
       .addStringOption(o => o.setName("reason").setDescription("Reason")),
-
-    new SlashCommandBuilder()
-      .setName("mute")
-      .setDescription("Mute a user")
+    new SlashCommandBuilder().setName("mute").setDescription("Mute a user")
       .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
       .addStringOption(o => o.setName("duration").setDescription("Duration (e.g. 10m)"))
       .addStringOption(o => o.setName("reason").setDescription("Reason")),
-
-    new SlashCommandBuilder()
-      .setName("unmute")
-      .setDescription("Unmute a user")
+    new SlashCommandBuilder().setName("unmute").setDescription("Unmute a user")
       .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("warn")
-      .setDescription("Warn a user")
+    new SlashCommandBuilder().setName("warn").setDescription("Warn a user")
       .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
       .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("lock")
-      .setDescription("Lock a channel"),
-
-    new SlashCommandBuilder()
-      .setName("unlock")
-      .setDescription("Unlock a channel"),
-
-    new SlashCommandBuilder()
-      .setName("msgcount")
-      .setDescription("Show message count for a user")
+    new SlashCommandBuilder().setName("lock").setDescription("Lock a channel"),
+    new SlashCommandBuilder().setName("unlock").setDescription("Unlock a channel"),
+    new SlashCommandBuilder().setName("msgcount").setDescription("Show message counts")
       .addUserOption(o => o.setName("user").setDescription("User")),
-
-    new SlashCommandBuilder()
-      .setName("leaderboard")
-      .setDescription("Show top message senders"),
-
-    new SlashCommandBuilder()
-      .setName("addrole")
-      .setDescription("Add role to a user")
+    new SlashCommandBuilder().setName("leaderboard").setDescription("Show top message senders"),
+    new SlashCommandBuilder().setName("addrole").setDescription("Add a role to member")
       .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
       .addRoleOption(o => o.setName("role").setDescription("Role").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("removerole")
-      .setDescription("Remove role from a user")
+    new SlashCommandBuilder().setName("removerole").setDescription("Remove a role from member")
       .addUserOption(o => o.setName("user").setDescription("User").setRequired(true))
       .addRoleOption(o => o.setName("role").setDescription("Role").setRequired(true)),
-
-    new SlashCommandBuilder()
-      .setName("createrole")
-      .setDescription("Create a new role")
+    new SlashCommandBuilder().setName("createrole").setDescription("Create a role")
       .addStringOption(o => o.setName("name").setDescription("Role name").setRequired(true))
-      .addStringOption(o => o.setName("color").setDescription("Hex color (e.g. #ff0000)"))
+      .addStringOption(o => o.setName("color").setDescription("Role color (hex)"))
   ].map(c => c.toJSON());
 
-  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  if (!TOKEN || !CLIENT_ID) return console.warn("Skipping command register: missing CLIENT_ID or TOKEN");
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
   try {
-    if (process.env.GUILD_ID) {
-      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
-    } else {
-      await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
-    }
-    console.log("✅ Slash commands registered!");
+    if (GUILD_ID) await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    else await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log("✅ Slash commands registered");
   } catch (err) {
-    console.error(err);
+    console.error("Command register failed:", err);
   }
 }
 
-// ---------------- COMMAND HANDLER ----------------
+// ---------------- READY ----------------
+client.once("ready", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  await registerCommands();
+  // resumeGiveaways() can be called here if you store giveaways in DB
+});
+
+// ---------------- MESSAGE / MEMBER LOGS ----------------
+client.on("messageDelete", async (msg) => {
+  try {
+    if (msg.partial) msg = await msg.fetch().catch(()=>null);
+    if (!msg) return;
+    const embed = new EmbedBuilder()
+      .setTitle("Message Deleted")
+      .addFields(
+        { name: "Author", value: `${msg.author?.tag || "Unknown"}`, inline: true },
+        { name: "Channel", value: `${msg.channel?.toString() || "Unknown"}`, inline: true },
+        { name: "Content", value: msg.content || "No content" }
+      )
+      .setTimestamp();
+    sendLog(MESSAGELOG_CHANNEL, { embeds: [embed] });
+  } catch (e) { console.error("msgDelete log err:", e); }
+});
+
+client.on("messageUpdate", async (oldMsg, newMsg) => {
+  try {
+    if (oldMsg.partial) oldMsg = await oldMsg.fetch().catch(()=>null);
+    if (newMsg.partial) newMsg = await newMsg.fetch().catch(()=>null);
+    if (!oldMsg || !newMsg) return;
+    if (oldMsg.content === newMsg.content) return;
+    const embed = new EmbedBuilder()
+      .setTitle("Message Edited")
+      .addFields(
+        { name: "Author", value: `${oldMsg.author?.tag || "Unknown"}`, inline: true },
+        { name: "Channel", value: `${oldMsg.channel?.toString() || "Unknown"}`, inline: true },
+        { name: "Before", value: oldMsg.content || "No content" },
+        { name: "After", value: newMsg.content || "No content" }
+      )
+      .setTimestamp();
+    sendLog(MESSAGELOG_CHANNEL, { embeds: [embed] });
+  } catch (e) { console.error("msgUpdate log err:", e); }
+});
+
+client.on("guildMemberAdd", async (member) => {
+  const embed = new EmbedBuilder()
+    .setTitle("Member Joined")
+    .addFields(
+      { name: "User", value: `${member.user.tag}`, inline: true },
+      { name: "ID", value: `${member.id}`, inline: true }
+    )
+    .setTimestamp();
+  sendLog(MEMBERLOG_CHANNEL, { embeds: [embed] });
+});
+
+client.on("guildMemberRemove", async (member) => {
+  const embed = new EmbedBuilder()
+    .setTitle("Member Left")
+    .addFields(
+      { name: "User", value: `${member.user.tag}`, inline: true },
+      { name: "ID", value: `${member.id}`, inline: true }
+    )
+    .setTimestamp();
+  sendLog(MEMBERLOG_CHANNEL, { embeds: [embed] });
+});
+
+// ---------------- Keep messageCounts updated (if Part1 duplicated this event, keep only one) ----------------
+client.on("messageCreate", async (msg) => {
+  try {
+    if (msg.author?.bot) return;
+    if (!messageCounts[msg.author.id]) messageCounts[msg.author.id] = { total: 0, daily: {} };
+    messageCounts[msg.author.id].total++;
+    const today = new Date().toISOString().split("T")[0];
+    messageCounts[msg.author.id].daily[today] = (messageCounts[msg.author.id].daily[today] || 0) + 1;
+    writeJSON("messages", messageCounts);
+  } catch (e) { console.error("msgcount store err:", e); }
+});
+// ---------- INTERACTION HANDLER ----------
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const { commandName, options, member, guild, channel, user } = interaction;
+  const { commandName, options, member, guild, channel } = interaction;
 
-  function isAdmin(m) { return m.permissions.has(PermissionsBitField.Flags.Administrator); }
-
-  try {
-    if (commandName === "ping") return interaction.reply({ content: "🏓 Pong!", ephemeral: true });
-
-    // lock / unlock
-    if (commandName === "lock" || commandName === "unlock") {
-      if (!isAdmin(member)) return interaction.reply({ content: "❌ Not authorized", ephemeral: true });
-      await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: commandName === "lock" ? false : true });
-      return interaction.reply({ content: commandName === "lock" ? "🔒 Channel locked" : "🔓 Channel unlocked", ephemeral: true });
-    }
-
-    // ban / kick
-    if (commandName === "ban" || commandName === "kick") {
-      if (!isAdmin(member)) return interaction.reply({ content: "❌ Not authorized", ephemeral: true });
-      const target = options.getUser("user");
-      const reason = options.getString("reason") || "No reason provided";
-      const targetMember = guild.members.cache.get(target.id);
-      if (!targetMember) return interaction.reply({ content: "❌ User not found", ephemeral: true });
-      if (commandName === "ban") await targetMember.ban({ reason });
-      else await targetMember.kick(reason);
-      return interaction.reply({ content: `✅ ${target.tag} ${commandName}ed`, ephemeral: true });
-    }
-  } catch (e) {
-    console.error(e);
-    try { await interaction.reply({ content: "❌ Error executing command.", ephemeral: true }); } catch {}
+  // Ping
+  if (commandName === "ping") {
+    return interaction.reply({ content: `🏓 Pong! Latency: ${client.ws.ping}ms`, ephemeral: true });
   }
-});
-// ---------------- GIVEAWAY SYSTEM ----------------
-const activeGiveaways = new Map();
 
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
+  // Ban
+  if (commandName === "ban") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const reason = options.getString("reason") || "No reason";
+    const target = await guild.members.fetch(user.id).catch(() => null);
+    if (!target) return interaction.reply("⚠️ User not found in server.");
+    await target.ban({ reason });
+    await sendLog(BANLOG_CHANNEL, `🚫 **${user.tag}** was banned by ${member.user.tag} — ${reason}`);
+    return interaction.reply(`✅ Banned **${user.tag}**`);
+  }
 
-  const { commandName } = interaction;
+  // Kick
+  if (commandName === "kick") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const reason = options.getString("reason") || "No reason";
+    const target = await guild.members.fetch(user.id).catch(() => null);
+    if (!target) return interaction.reply("⚠️ User not found.");
+    await target.kick(reason);
+    await sendLog(BANLOG_CHANNEL, `👢 **${user.tag}** was kicked by ${member.user.tag} — ${reason}`);
+    return interaction.reply(`✅ Kicked **${user.tag}**`);
+  }
 
-  if (commandName === 'gstart') {
-    const duration = interaction.options.getString('duration');
-    const prize = interaction.options.getString('prize');
-    const winnerCount = interaction.options.getInteger('winners');
-    const requiredRole = interaction.options.getRole('requiredrole');
-    const bonusRole = interaction.options.getRole('bonusrole');
-    const bonusEntries = interaction.options.getInteger('bonusentries') || 0;
+  // Mute
+  if (commandName === "mute") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const duration = options.getString("duration") || "10m";
+    const reason = options.getString("reason") || "No reason";
+    const target = await guild.members.fetch(user.id).catch(() => null);
+    if (!target) return interaction.reply("⚠️ User not found.");
+    const muteRole = guild.roles.cache.get(MUTE_ROLE_ID);
+    if (!muteRole) return interaction.reply("⚠️ Mute role not found.");
+    await target.roles.add(muteRole, reason);
+    await sendLog(BANLOG_CHANNEL, `🔇 ${user.tag} muted by ${member.user.tag} for ${duration} — ${reason}`);
+    setTimeout(() => {
+      if (target.roles.cache.has(muteRole.id)) target.roles.remove(muteRole, "Mute expired");
+    }, ms(duration));
+    return interaction.reply(`✅ Muted **${user.tag}** for ${duration}`);
+  }
 
-    if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageGuild))
-      return interaction.reply({ content: '❌ You do not have permission to start giveaways.', ephemeral: true });
+  // Unmute
+  if (commandName === "unmute") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const target = await guild.members.fetch(user.id).catch(() => null);
+    if (!target) return interaction.reply("⚠️ User not found.");
+    const muteRole = guild.roles.cache.get(MUTE_ROLE_ID);
+    if (!muteRole) return interaction.reply("⚠️ Mute role not found.");
+    await target.roles.remove(muteRole, "Unmuted");
+    await sendLog(BANLOG_CHANNEL, `🔊 ${user.tag} unmuted by ${member.user.tag}`);
+    return interaction.reply(`✅ Unmuted **${user.tag}**`);
+  }
 
-    const endTime = Date.now() + ms(duration);
-    const embed = new EmbedBuilder()
-      .setTitle('🎉 Giveaway Started!')
-      .setDescription(
-        `**Prize:** ${prize}\n**Winners:** ${winnerCount}\n**Ends:** <t:${Math.floor(endTime / 1000)}:R>\n` +
-        `${requiredRole ? `**Required Role:** ${requiredRole}` : ''}`
-      )
-      .setColor('Gold')
-      .setFooter({ text: 'React with 🎉 to enter!' });
-
-    const msg = await interaction.reply({ embeds: [embed], fetchReply: true });
-    await msg.react('🎉');
-
-    activeGiveaways.set(msg.id, {
-      prize,
-      winnerCount,
-      endTime,
-      requiredRole: requiredRole?.id || null,
-      bonusRole: bonusRole?.id || null,
-      bonusEntries,
-      host: interaction.user.id,
-      channelId: msg.channel.id,
+  // Warn
+  if (commandName === "warn") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const reason = options.getString("reason");
+    if (!WarningModel) return interaction.reply("⚠️ Warnings disabled (no DB).");
+    await WarningModel.create({
+      guildId: guild.id,
+      userId: user.id,
+      modId: member.id,
+      reason,
+      timestamp: new Date(),
     });
+    return interaction.reply(`⚠️ Warned **${user.tag}** — ${reason}`);
   }
 
-  if (commandName === 'greroll') {
-    const messageId = interaction.options.getString('messageid');
-    const giveaway = activeGiveaways.get(messageId);
-    if (!giveaway) return interaction.reply('❌ Giveaway not found.');
-    await pickWinners(interaction, giveaway, true);
+  // Lock / Unlock
+  if (commandName === "lock") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
+    return interaction.reply("🔒 Channel locked.");
+  }
+  if (commandName === "unlock") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: true });
+    return interaction.reply("🔓 Channel unlocked.");
+  }
+
+  // Role Add
+  if (commandName === "addrole") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const role = options.getRole("role");
+    const target = await guild.members.fetch(user.id);
+    await target.roles.add(role);
+    return interaction.reply(`✅ Added role ${role.name} to ${user.tag}`);
+  }
+
+  // Role Remove
+  if (commandName === "removerole") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const user = options.getUser("user");
+    const role = options.getRole("role");
+    const target = await guild.members.fetch(user.id);
+    await target.roles.remove(role);
+    return interaction.reply(`✅ Removed role ${role.name} from ${user.tag}`);
+  }
+
+  // Create Role
+  if (commandName === "createrole") {
+    if (!isAdmin(member)) return interaction.reply({ content: "❌ Only admins can create roles.", ephemeral: true });
+    const name = options.getString("name");
+    const color = options.getString("color") || "#ffffff";
+    const role = await guild.roles.create({ name, color });
+    return interaction.reply(`✅ Created role **${role.name}**`);
+  }
+
+  // Giveaway start
+  if (commandName === "gstart") {
+    if (!isMod(member)) return interaction.reply({ content: "❌ You lack permission.", ephemeral: true });
+    const duration = options.getString("duration");
+    const winners = options.getInteger("winners");
+    const prize = options.getString("prize");
+    const roleRequired = options.getRole("role_required");
+    const extraRole = options.getRole("extra_entries");
+
+    const embed = new EmbedBuilder()
+      .setTitle("🎉 Giveaway Started!")
+      .setDescription(`**Prize:** ${prize}\n**Hosted by:** ${member}\n**Duration:** ${duration}`)
+      .setColor("Gold")
+      .setTimestamp();
+
+    const msg = await channel.send({ embeds: [embed] });
+    await msg.react("🎉");
+
+    const giveaway = await GiveawayModel.create({
+      messageId: msg.id,
+      channelId: channel.id,
+      prize,
+      winners,
+      hostId: member.id,
+      roleRequired: roleRequired?.id || null,
+      extraRole: extraRole?.id || null,
+      endsAt: new Date(Date.now() + ms(duration)),
+    });
+
+    setTimeout(async () => {
+      const giveawayData = await GiveawayModel.findById(giveaway.id);
+      if (!giveawayData) return;
+      const fetchedMsg = await channel.messages.fetch(giveawayData.messageId).catch(() => null);
+      if (!fetchedMsg) return;
+      const users = (await fetchedMsg.reactions.cache.get("🎉")?.users.fetch())?.filter((u) => !u.bot) || [];
+      let participants = new Set(users.map((u) => u.id));
+
+      if (giveawayData.roleRequired) {
+        participants = new Set(
+          [...participants].filter((id) =>
+            guild.members.cache.get(id)?.roles.cache.has(giveawayData.roleRequired)
+          )
+        );
+      }
+      if (giveawayData.extraRole) {
+        const extra = [...participants].filter((id) =>
+          guild.members.cache.get(id)?.roles.cache.has(giveawayData.extraRole)
+        );
+        extra.forEach((id) => participants.add(id));
+      }
+
+      const winnersList = pickWinners(participants, giveawayData.winners);
+      const mention = winnersList.map((id) => `<@${id}>`).join(", ") || "No valid participants 😢";
+      await channel.send(`🎉 Giveaway ended!\n**Prize:** ${giveawayData.prize}\n**Winners:** ${mention}`);
+      await GiveawayModel.deleteOne({ _id: giveawayData.id });
+    }, ms(duration));
+
+    return interaction.reply({ content: "🎁 Giveaway started!", ephemeral: true });
+  }
+
+  // Message Count
+  if (commandName === "msgcount") {
+    const user = options.getUser("user") || member.user;
+    const count = messageCounts[user.id] || 0;
+    return interaction.reply(`💬 ${user.tag} has sent **${count}** messages.`);
+  }
+
+  // Leaderboard
+  if (commandName === "leaderboard") {
+    const sorted = Object.entries(messageCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    const desc = sorted.map(([id, count], i) => `**${i + 1}.** <@${id}> — ${count}`).join("\n");
+    return interaction.reply({ embeds: [new EmbedBuilder().setTitle("🏆 Message Leaderboard").setDescription(desc)] });
   }
 });
 
-async function pickWinners(interaction, giveaway, reroll = false) {
-  const channel = await client.channels.fetch(giveaway.channelId);
-  const msg = await channel.messages.fetch(interaction.options.getString('messageid'));
-  const reactions = await msg.reactions.cache.get('🎉').users.fetch();
-  const entries = [];
-
-  reactions.forEach((u) => {
-    if (u.bot) return;
-    if (giveaway.requiredRole && !channel.guild.members.cache.get(u.id).roles.cache.has(giveaway.requiredRole)) return;
-
-    let count = 1;
-    if (giveaway.bonusRole && channel.guild.members.cache.get(u.id).roles.cache.has(giveaway.bonusRole))
-      count += giveaway.bonusEntries;
-    for (let i = 0; i < count; i++) entries.push(u.id);
-  });
-
-  if (entries.length === 0)
-    return interaction.reply({ content: '❌ No valid participants found.', ephemeral: true });
-
-  const winners = [];
-  for (let i = 0; i < giveaway.winnerCount && entries.length > 0; i++) {
-    const winnerId = entries.splice(Math.floor(Math.random() * entries.length), 1)[0];
-    if (!winners.includes(winnerId)) winners.push(winnerId);
-  }
-
-  await interaction.reply({
-    content: reroll
-      ? `🔁 Giveaway rerolled! New winners: ${winners.map((id) => `<@${id}>`).join(', ')}`
-      : `🎉 Congratulations ${winners.map((id) => `<@${id}>`).join(', ')}! You won **${giveaway.prize}**!`,
-  });
-}
-
-// ---------------- LOGGING SYSTEM ----------------
-client.on('messageDelete', async (message) => {
-  if (message.partial || message.author.bot) return;
-  const logChannel = message.guild.channels.cache.find(c => c.name === 'message-logs');
-  if (logChannel)
-    logChannel.send(`🗑️ Message deleted in ${message.channel} by ${message.author}: ${message.content}`);
+// ---------- MESSAGE COUNTER & LOGS ----------
+client.on("messageCreate", async (msg) => {
+  if (msg.author.bot || !msg.guild) return;
+  messageCounts[msg.author.id] = (messageCounts[msg.author.id] || 0) + 1;
+  writeJSON("messages", messageCounts);
 });
 
-client.on('messageUpdate', async (oldMsg, newMsg) => {
-  if (oldMsg.partial || oldMsg.author.bot) return;
-  const logChannel = oldMsg.guild.channels.cache.find(c => c.name === 'message-logs');
-  if (logChannel)
-    logChannel.send(`✏️ Message edited in ${oldMsg.channel} by ${oldMsg.author}\nOld: ${oldMsg.content}\nNew: ${newMsg.content}`);
+client.on("messageDelete", async (msg) => {
+  if (!msg.guild || msg.author?.bot) return;
+  await sendLog(MESSAGELOG_CHANNEL, `🗑️ Message deleted in ${msg.channel} by ${msg.author?.tag || "unknown"}`);
 });
 
-client.on('guildMemberAdd', async (member) => {
-  const logChannel = member.guild.channels.cache.find(c => c.name === 'member-logs');
-  if (logChannel) logChannel.send(`✅ **${member.user.tag}** joined the server!`);
+client.on("messageUpdate", async (oldMsg, newMsg) => {
+  if (!oldMsg.guild || oldMsg.author?.bot) return;
+  await sendLog(MESSAGELOG_CHANNEL, `✏️ Message edited in ${oldMsg.channel} by ${oldMsg.author.tag}`);
 });
 
-client.on('guildMemberRemove', async (member) => {
-  const logChannel = member.guild.channels.cache.find(c => c.name === 'member-logs');
-  if (logChannel) logChannel.send(`❌ **${member.user.tag}** left the server.`);
+client.on("guildMemberAdd", (member) => {
+  sendLog(MESSAGELOG_CHANNEL, `👋 ${member.user.tag} joined the server.`);
 });
 
-// ---------------- KEEP ALIVE ----------------
-app.get('/', (req, res) => res.send('Bot is alive!'));
-app.listen(3000, () => console.log('🌐 Express server running for uptime'));
+client.on("guildMemberRemove", (member) => {
+  sendLog(MESSAGELOG_CHANNEL, `👋 ${member.user.tag} left the server.`);
+});
 
-// ---------------- LOGIN ----------------
-client.login(process.env.TOKEN);
+// ---------- STARTUP ----------
+client.once("ready", async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  client.user.setActivity("FSG WATCHER | /help", { type: 2 });
+  await registerCommands();
+});
+
+client.login(TOKEN);
