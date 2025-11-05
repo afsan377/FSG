@@ -20,8 +20,17 @@ const giveaways = {};      // { messageId: { channelId, entries: [], ended: fals
 const messages = {};       // { guildId: { userId: { daily: 0, total: 0 } } }
 const moderationLogs = []; // Array of { type, user, moderator, reason, time }
 
-// ---------- CONFIG ----------
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
+// ---------- CONFIG FROM ENV ----------
+const GUILD_ID = process.env.GUILD_ID;
+const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID;
+const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID;
+const MOD_ROLE_ID = process.env.MOD_ROLE_ID;
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
+const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID;
+
+const BANLOG_CHANNEL = process.env.BANLOG_CHANNEL;
+const MESSAGELOG_CHANNEL = process.env.MESSAGELOG_CHANNEL;
+const GIVEAWAY_CHANNELS = process.env.GIVEAWAY_CHANNELS.split(',');
 
 // ---------- BOT READY ----------
 client.once('ready', () => {
@@ -41,6 +50,10 @@ if (!messages[guildId][userId]) messages[guildId][userId] = { daily: 0, total: 0
 messages[guildId][userId].daily++;  
 messages[guildId][userId].total++;  
 
+// Log message to MESSAGELOG_CHANNEL  
+const msgLogChannel = message.guild.channels.cache.get(MESSAGELOG_CHANNEL);  
+if (msgLogChannel) msgLogChannel.send(`📩 ${message.author.tag} sent a message in #${message.channel.name}: "${message.content}"`);  
+
 });
 
 // ---------- LOGIN ----------
@@ -51,80 +64,58 @@ const { SlashCommandBuilder } = require('discord.js');
 client.commands = new Collection();
 
 // ---------- START GIVEAWAY ----------
-client.commands.set('startgiveaway', {
+client.commands.set('giveaway', {
 data: new SlashCommandBuilder()
-.setName('startgiveaway')
-.setDescription('Start a new giveaway')
-.addStringOption(option => option.setName('prize').setDescription('Giveaway prize').setRequired(true))
-.addIntegerOption(option => option.setName('duration').setDescription('Duration in seconds').setRequired(true)),
+.setName('giveaway')
+.setDescription('Start a giveaway')
+.addStringOption(option => option.setName('prize').setDescription('Prize for the giveaway').setRequired(true))
+.addIntegerOption(option => option.setName('duration').setDescription('Duration in minutes').setRequired(true)),
 execute: async (interaction) => {
-const prize = interaction.options.getString('prize');
-const duration = interaction.options.getInteger('duration') * 1000;
-const endTime = Date.now() + duration;
+const channelId = interaction.channel.id;
+if (!GIVEAWAY_CHANNELS.includes(channelId)) return interaction.reply({ content: '❌ Giveaways cannot be started here!', ephemeral: true });
 
-    const giveawayMessage = await interaction.channel.send({ content: `🎉 **GIVEAWAY** 🎉\nPrize: **${prize}**\nReact with 🎁 to join!\nEnds in **${duration/1000} seconds**` });  
-    await giveawayMessage.react('🎁');  
+    const prize = interaction.options.getString('prize');  
+    const duration = interaction.options.getInteger('duration');  
 
-    // Store giveaway in memory  
-    giveaways[giveawayMessage.id] = {  
-        channelId: interaction.channel.id,  
+    const embed = new EmbedBuilder()  
+        .setTitle('🎉 Giveaway!')  
+        .setDescription(`Prize: **${prize}**\nReact to enter!`)  
+        .setFooter({ text: `Ends in ${duration} minutes` })  
+        .setColor('Random');  
+
+    const msg = await interaction.channel.send({ embeds: [embed] });  
+    await msg.react('🎁');  
+
+    giveaways[msg.id] = {  
+        channelId: msg.channel.id,  
         entries: [],  
         ended: false,  
         prize,  
-        endTime  
+        endTime: Date.now() + duration * 60 * 1000  
     };  
 
     interaction.reply({ content: `✅ Giveaway started for **${prize}**!`, ephemeral: true });  
 
-    // End giveaway automatically  
+    // Automatically end giveaway after duration  
     setTimeout(() => {  
-        const giveaway = giveaways[giveawayMessage.id];  
+        const giveaway = giveaways[msg.id];  
         if (!giveaway || giveaway.ended) return;  
         giveaway.ended = true;  
 
-        const entries = giveaway.entries;  
-        if (entries.length === 0) {  
-            interaction.channel.send(`No one joined the giveaway for **${prize}** 😢`);  
-        } else {  
-            const winnerId = entries[Math.floor(Math.random() * entries.length)];  
-            const winner = interaction.guild.members.cache.get(winnerId);  
-            interaction.channel.send(`🎉 Congratulations ${winner}! You won **${prize}**!`);  
+        if (giveaway.entries.length === 0) {  
+            msg.channel.send('No entries, giveaway cancelled 😢');  
+            return;  
         }  
 
-        // Log giveaway end  
-        const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
-        if (logChannel) logChannel.send(`Giveaway ended for **${prize}**`);  
-    }, duration);  
-}  
-
-});
-
-// ---------- END GIVEAWAY MANUALLY ----------
-client.commands.set('endgiveaway', {
-data: new SlashCommandBuilder()
-.setName('endgiveaway')
-.setDescription('End an active giveaway')
-.addStringOption(option => option.setName('messageid').setDescription('Giveaway message ID').setRequired(true)),
-execute: async (interaction) => {
-const messageId = interaction.options.getString('messageid');
-const giveaway = giveaways[messageId];
-if (!giveaway || giveaway.ended) return interaction.reply({ content: "❌ Giveaway not found or already ended.", ephemeral: true });
-
-    giveaway.ended = true;  
-
-    const entries = giveaway.entries;  
-    if (entries.length === 0) {  
-        interaction.channel.send(`No one joined the giveaway for **${giveaway.prize}** 😢`);  
-    } else {  
-        const winnerId = entries[Math.floor(Math.random() * entries.length)];  
+        const winnerId = giveaway.entries[Math.floor(Math.random() * giveaway.entries.length)];  
         const winner = interaction.guild.members.cache.get(winnerId);  
-        interaction.channel.send(`🎉 Congratulations ${winner}! You won **${giveaway.prize}**!`);  
-    }  
 
-    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
-    if (logChannel) logChannel.send(`Giveaway ended manually for **${giveaway.prize}**`);  
+        msg.channel.send(`🎉 Congratulations ${winner ? winner : `<@${winnerId}>`}! You won **${giveaway.prize}**!`);  
 
-    interaction.reply({ content: `✅ Giveaway ended manually.`, ephemeral: true });  
+        // Log winner  
+        const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);  
+        if (logChannel) logChannel.send(`🎉 Giveaway won by ${winner ? winner.user.tag : winnerId} | Prize: ${giveaway.prize}`);  
+    }, duration * 60 * 1000);  
 }  
 
 });
@@ -159,6 +150,9 @@ giveaway.entries = giveaway.entries.filter(id => id !== user.id);
 
 });
 // ---------- PART 4: MODERATION COMMANDS ----------
+const { SlashCommandBuilder } = require('discord.js');
+
+// ---------- BAN COMMAND ----------
 client.commands.set('ban', {
 data: new SlashCommandBuilder()
 .setName('ban')
@@ -168,17 +162,14 @@ data: new SlashCommandBuilder()
 execute: async (interaction) => {
 const target = interaction.options.getUser('target');
 const reason = interaction.options.getString('reason') || 'No reason provided';
-
-    const member = interaction.guild.members.cache.get(target.id);  
-    if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });  
-
-    if (!interaction.member.permissions.has(PermissionsBitField.Flags.BanMembers)) return interaction.reply({ content: 'You cannot ban members.', ephemeral: true });  
+const member = interaction.guild.members.cache.get(target.id);
+if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
+if (!interaction.member.permissions.has(PermissionsBitField.Flags.BanMembers)) return interaction.reply({ content: 'You cannot ban members.', ephemeral: true });
 
     await member.ban({ reason });  
 
     // Log it  
-    moderationLogs.push({ type: 'Ban', user: target.tag, moderator: interaction.user.tag, reason, time: new Date() });  
-    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
+    const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);  
     if (logChannel) logChannel.send(`✅ ${target.tag} was banned by ${interaction.user.tag} | Reason: ${reason}`);  
 
     interaction.reply({ content: `✅ ${target.tag} has been banned.`, ephemeral: true });  
@@ -202,8 +193,7 @@ if (!interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers)) 
 
     await member.kick(reason);  
 
-    moderationLogs.push({ type: 'Kick', user: target.tag, moderator: interaction.user.tag, reason, time: new Date() });  
-    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
+    const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);  
     if (logChannel) logChannel.send(`✅ ${target.tag} was kicked by ${interaction.user.tag} | Reason: ${reason}`);  
 
     interaction.reply({ content: `✅ ${target.tag} has been kicked.`, ephemeral: true });  
@@ -224,14 +214,13 @@ const duration = interaction.options.getInteger('duration');
 const member = interaction.guild.members.cache.get(target.id);
 if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
 
-    let muteRole = interaction.guild.roles.cache.find(r => r.name === 'Muted');  
+    let muteRole = interaction.guild.roles.cache.get(MUTE_ROLE_ID);  
     if (!muteRole) {  
         muteRole = await interaction.guild.roles.create({ name: 'Muted', permissions: [] });  
     }  
     await member.roles.add(muteRole);  
 
-    moderationLogs.push({ type: 'Mute', user: target.tag, moderator: interaction.user.tag, duration, time: new Date() });  
-    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
+    const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);  
     if (logChannel) logChannel.send(`🔇 ${target.tag} was muted by ${interaction.user.tag} for ${duration} minutes`);  
 
     interaction.reply({ content: `✅ ${target.tag} has been muted for ${duration} minutes.`, ephemeral: true });  
@@ -254,57 +243,20 @@ const target = interaction.options.getUser('target');
 const member = interaction.guild.members.cache.get(target.id);
 if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
 
-    const muteRole = interaction.guild.roles.cache.find(r => r.name === 'Muted');  
+    const muteRole = interaction.guild.roles.cache.get(MUTE_ROLE_ID);  
     if (muteRole) await member.roles.remove(muteRole);  
 
-    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);  
+    const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);  
     if (logChannel) logChannel.send(`🔊 ${target.tag} was unmuted by ${interaction.user.tag}`);  
 
     interaction.reply({ content: `✅ ${target.tag} has been unmuted.`, ephemeral: true });  
 }  
 
 });
-
-// ---------- ROLE MANAGEMENT: ADD & REMOVE & CREATE ----------
-client.commands.set('role', {
-data: new SlashCommandBuilder()
-.setName('role')
-.setDescription('Role management')
-.addStringOption(option => option.setName('action').setDescription('add/remove/create').setRequired(true))
-.addUserOption(option => option.setName('target').setDescription('User'))
-.addRoleOption(option => option.setName('role').setDescription('Role'))
-.addStringOption(option => option.setName('name').setDescription('Role name for create')),
-execute: async (interaction) => {
-const action = interaction.options.getString('action');
-const targetUser = interaction.options.getUser('target');
-const role = interaction.options.getRole('role');
-const roleName = interaction.options.getString('name');
-const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
-
-    if (action === 'add' && targetUser && role) {  
-        const member = interaction.guild.members.cache.get(targetUser.id);  
-        await member.roles.add(role);  
-        if (logChannel) logChannel.send(`✅ ${role.name} role added to ${targetUser.tag} by ${interaction.user.tag}`);  
-        interaction.reply({ content: `✅ Role added.`, ephemeral: true });  
-    } else if (action === 'remove' && targetUser && role) {  
-        const member = interaction.guild.members.cache.get(targetUser.id);  
-        await member.roles.remove(role);  
-        if (logChannel) logChannel.send(`✅ ${role.name} role removed from ${targetUser.tag} by ${interaction.user.tag}`);  
-        interaction.reply({ content: `✅ Role removed.`, ephemeral: true });  
-    } else if (action === 'create' && roleName) {  
-        const newRole = await interaction.guild.roles.create({ name: roleName });  
-        if (logChannel) logChannel.send(`✅ Role ${roleName} created by ${interaction.user.tag}`);  
-        interaction.reply({ content: `✅ Role created.`, ephemeral: true });  
-    } else {  
-        interaction.reply({ content: `❌ Invalid options.`, ephemeral: true });  
-    }  
-}  
-
-});
 // ---------- PART 5: MESSAGE TRACKING COMMANDS + DAILY RESET ----------
 const { SlashCommandBuilder } = require('discord.js');
 
-// ---------- DAILY MESSAGE COUNT ----------
+// ---------- /dailymsg COMMAND ----------
 client.commands.set('dailymsg', {
 data: new SlashCommandBuilder()
 .setName('dailymsg')
@@ -320,7 +272,7 @@ const userId = interaction.user.id;
 
 });
 
-// ---------- TOTAL MESSAGE COUNT ----------
+// ---------- /totalmsg COMMAND ----------
 client.commands.set('totalmsg', {
 data: new SlashCommandBuilder()
 .setName('totalmsg')
@@ -336,7 +288,7 @@ const userId = interaction.user.id;
 
 });
 
-// ---------- MESSAGE LEADERBOARD ----------
+// ---------- /leaderboard COMMAND ----------
 client.commands.set('leaderboard', {
 data: new SlashCommandBuilder()
 .setName('leaderboard')
@@ -361,7 +313,7 @@ if (!messages[guildId]) return interaction.reply({ content: 'No message data yet
 
 });
 
-// ---------- DAILY RESET ----------
+// ---------- DAILY RESET OF MESSAGE COUNTS ----------
 setInterval(() => {
 for (const guildId in messages) {
 for (const userId in messages[guildId]) {
@@ -369,4 +321,12 @@ messages[guildId][userId].daily = 0;
 }
 }
 console.log('🔄 Daily message counts reset');
+
+// Optional: log daily reset  
+const guild = client.guilds.cache.get(GUILD_ID);  
+if (guild) {  
+    const msgLogChannel = guild.channels.cache.get(MESSAGELOG_CHANNEL);  
+    if (msgLogChannel) msgLogChannel.send('🔄 Daily message counts have been reset!');  
+}  
+
 }, 24 * 60 * 60 * 1000); // every 24 hours
