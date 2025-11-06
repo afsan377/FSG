@@ -1,17 +1,19 @@
-// index.js
+// index.js - Part 1: Setup and Configuration
 const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, Collection, SlashCommandBuilder } = require('discord.js');
 const express = require('express');
 require('dotenv').config();
 
 // ---- CONFIGURATION: Set these in your .env file ----------
 const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID; // Add this to .env
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = process.env.PORT || 3000;
 const GIVEAWAY_CHANNELS = process.env.GIVEAWAY_CHANNELS ? process.env.GIVEAWAY_CHANNELS.split(',') : [];
 const BANLOG_CHANNEL = process.env.BANLOG_CHANNEL;
 const MESSAGELOG_CHANNEL = process.env.MESSAGELOG_CHANNEL;
-const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID; // You can leave empty: bot will auto-create
+const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID; // Optional
 
+// ---------- CLIENT SETUP ----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -23,17 +25,27 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
+// Collections and Data
 client.commands = new Collection();
-const giveaways = new Map();
-const messages = {};
+const giveaways = new Map();  // Active giveaways
+const messages = {};          // Message counts
 
-// --- Keepalive server for Render & others ---
+// ---------- EXPRESS KEEPALIVE ----------
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 app.listen(PORT, () => console.log(`✅ Express active on port ${PORT}`));
 
-// --- Slash Commands (Giveaway, Moderation, Leaderboard) ---
+// ---------- HELPER FUNCTION: Fetch Member Safely ----------
+async function fetchMemberSafe(guild, userId) {
+  try {
+    return await guild.members.fetch(userId);
+  } catch {
+    return null;
+  }
+}
+// index.js - Part 2: Slash Commands Implementation
 
+// ---------- GIVEAWAY COMMAND ----------
 client.commands.set('giveaway', {
   data: new SlashCommandBuilder()
     .setName('giveaway')
@@ -45,16 +57,19 @@ client.commands.set('giveaway', {
     if (!GIVEAWAY_CHANNELS.includes(channelId)) {
       return interaction.reply({ content: '❌ Giveaways cannot be started here!', ephemeral: true });
     }
+
     const prize = interaction.options.getString('prize');
     const duration = interaction.options.getInteger('duration');
+
     const embed = new EmbedBuilder()
       .setTitle('🎉 Giveaway!')
-      .setDescription(`Prize: **${prize}**
-React to enter!`)
+      .setDescription(`Prize: **${prize}**\nReact to enter!`)
       .setFooter({ text: `Ends in ${duration} minutes` })
-      .setColor('Random');
+      .setColor('Blue'); // Fixed color
+
     const msg = await interaction.channel.send({ embeds: [embed] });
     await msg.react('🎁');
+
     giveaways.set(msg.id, {
       channelId: msg.channel.id,
       entries: [],
@@ -62,25 +77,31 @@ React to enter!`)
       prize,
       endTime: Date.now() + duration * 60 * 1000
     });
+
     await interaction.reply({ content: `✅ Giveaway started for **${prize}**!`, ephemeral: true });
 
-    setTimeout(() => {
+    setTimeout(async () => {
       const giveaway = giveaways.get(msg.id);
       if (!giveaway || giveaway.ended) return;
       giveaway.ended = true;
+
       if (giveaway.entries.length === 0) {
         msg.channel.send('No entries, giveaway cancelled 😢');
         return;
       }
+
       const winnerId = giveaway.entries[Math.floor(Math.random() * giveaway.entries.length)];
-      const winner = msg.guild.members.cache.get(winnerId);
+      const winner = await fetchMemberSafe(msg.guild, winnerId);
+
       msg.channel.send(`🎉 Congratulations ${winner ? winner : `<@${winnerId}>`}! You won **${giveaway.prize}**!`);
+
       const logChannel = msg.guild.channels.cache.get(BANLOG_CHANNEL);
       if (logChannel) logChannel.send(`🎉 Giveaway won by ${winner ? winner.user.tag : winnerId} | Prize: ${giveaway.prize}`);
     }, duration * 60 * 1000);
   }
 });
 
+// ---------- BAN COMMAND ----------
 client.commands.set('ban', {
   data: new SlashCommandBuilder()
     .setName('ban')
@@ -94,6 +115,7 @@ client.commands.set('ban', {
     if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.BanMembers))
       return interaction.reply({ content: 'You cannot ban members.', ephemeral: true });
+
     await member.ban({ reason });
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`✅ ${target.tag} was banned by ${interaction.user.tag} | Reason: ${reason}`);
@@ -101,6 +123,7 @@ client.commands.set('ban', {
   }
 });
 
+// ---------- KICK COMMAND ----------
 client.commands.set('kick', {
   data: new SlashCommandBuilder()
     .setName('kick')
@@ -114,6 +137,7 @@ client.commands.set('kick', {
     if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers))
       return interaction.reply({ content: 'You cannot kick members.', ephemeral: true });
+
     await member.kick(reason);
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`✅ ${target.tag} was kicked by ${interaction.user.tag} | Reason: ${reason}`);
@@ -121,6 +145,7 @@ client.commands.set('kick', {
   }
 });
 
+// ---------- MUTE COMMAND ----------
 client.commands.set('mute', {
   data: new SlashCommandBuilder()
     .setName('mute')
@@ -132,12 +157,16 @@ client.commands.set('mute', {
     const duration = interaction.options.getInteger('duration');
     const member = interaction.guild.members.cache.get(target.id);
     if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
+
     let muteRole = interaction.guild.roles.cache.get(MUTE_ROLE_ID);
     if (!muteRole) muteRole = await interaction.guild.roles.create({ name: 'Muted', permissions: [] });
     await member.roles.add(muteRole);
+
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`🔇 ${target.tag} was muted by ${interaction.user.tag} for ${duration} minutes`);
+
     await interaction.reply({ content: `✅ ${target.tag} has been muted for ${duration} minutes.`, ephemeral: true });
+
     setTimeout(async () => {
       await member.roles.remove(muteRole);
       if (logChannel) logChannel.send(`🔊 ${target.tag} has been unmuted after ${duration} minutes.`);
@@ -145,6 +174,7 @@ client.commands.set('mute', {
   }
 });
 
+// ---------- UNMUTE COMMAND ----------
 client.commands.set('unmute', {
   data: new SlashCommandBuilder()
     .setName('unmute')
@@ -154,14 +184,17 @@ client.commands.set('unmute', {
     const target = interaction.options.getUser('target');
     const member = interaction.guild.members.cache.get(target.id);
     if (!member) return interaction.reply({ content: 'User not found.', ephemeral: true });
+
     const muteRole = interaction.guild.roles.cache.get(MUTE_ROLE_ID);
     if (muteRole) await member.roles.remove(muteRole);
+
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`🔊 ${target.tag} was unmuted by ${interaction.user.tag}`);
     await interaction.reply({ content: `✅ ${target.tag} has been unmuted.`, ephemeral: true });
   }
 });
 
+// ---------- LEADERBOARD COMMAND ----------
 client.commands.set('leaderboard', {
   data: new SlashCommandBuilder()
     .setName('leaderboard')
@@ -169,75 +202,89 @@ client.commands.set('leaderboard', {
   execute: async (interaction) => {
     const guildId = interaction.guild.id;
     if (!messages[guildId]) return interaction.reply({ content: 'No messages tracked yet.', ephemeral: true });
+
     const sorted = Object.entries(messages[guildId])
       .sort(([, a], [, b]) => b.total - a.total)
       .slice(0, 10);
+
     let desc = '';
     for (let i = 0; i < sorted.length; i++) {
       const user = await client.users.fetch(sorted[i][0]);
-      desc += `**${i + 1}. ${user.tag}** - Total: ${sorted[i][1].total} | Daily: ${sorted[i][1].daily}
-`;
+      desc += `**${i + 1}. ${user.tag}** - Total: ${sorted[i][1].total} | Daily: ${sorted[i][1].daily}\n`;
     }
+
     const embed = new EmbedBuilder()
       .setTitle('📊 Message Leaderboard')
       .setDescription(desc)
-      .setColor('Random');
+      .setColor('Blue');
+
     await interaction.reply({ embeds: [embed] });
   }
 });
+// index.js - Part 3: Handlers, Logging, and Ready/Login
 
-// ------------ SLASH COMMAND HANDLER (crucial for working bot!) ----------------
+// ---------- INTERACTION HANDLER ----------
 client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
+
   const command = client.commands.get(interaction.commandName);
-  if (command) {
-    try {
-      await command.execute(interaction);
-    } catch (error) {
-      console.error(error);
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ content: 'There was an error.', ephemeral: true });
-      } else {
-        await interaction.reply({ content: 'There was an error.', ephemeral: true });
-      }
+  if (!command) return;
+
+  try {
+    await command.execute(interaction);
+  } catch (error) {
+    console.error(error);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: 'There was an error executing the command.', ephemeral: true });
+    } else {
+      await interaction.reply({ content: 'There was an error executing the command.', ephemeral: true });
     }
   }
 });
 
-// ------------ GIVEAWAY REACTION TRACKING ------------
+// ---------- GIVEAWAY REACTION TRACKING ----------
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch();
   if (reaction.message.partial) await reaction.message.fetch();
+
   const giveaway = giveaways.get(reaction.message.id);
   if (!giveaway || giveaway.ended) return;
+
   if (!giveaway.entries.includes(user.id)) {
     giveaway.entries.push(user.id);
   }
 });
+
 client.on('messageReactionRemove', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch();
   if (reaction.message.partial) await reaction.message.fetch();
+
   const giveaway = giveaways.get(reaction.message.id);
   if (!giveaway || giveaway.ended) return;
+
   giveaway.entries = giveaway.entries.filter(id => id !== user.id);
 });
 
-// ------------ MESSAGE LOGGING & TRACKING ------------
+// ---------- MESSAGE LOGGING & TRACKING ----------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
+
   const guildId = message.guild.id;
   const userId = message.author.id;
+
   if (!messages[guildId]) messages[guildId] = {};
   if (!messages[guildId][userId]) messages[guildId][userId] = { daily: 0, total: 0 };
+
   messages[guildId][userId].daily += 1;
   messages[guildId][userId].total += 1;
+
   const logChannel = message.guild.channels.cache.get(MESSAGELOG_CHANNEL);
   if (logChannel) logChannel.send(`📝 ${message.author.tag} sent a message in ${message.channel}`);
 });
 
-// ------------ DAILY RESET ------------
+// ---------- DAILY RESET ----------
 setInterval(() => {
   for (const guildId in messages) {
     for (const userId in messages[guildId]) {
@@ -245,15 +292,17 @@ setInterval(() => {
     }
   }
   console.log('🔄 Daily message counts reset');
+
   const guild = client.guilds.cache.get(GUILD_ID);
   if (guild) {
     const msgLogChannel = guild.channels.cache.get(MESSAGELOG_CHANNEL);
     if (msgLogChannel) msgLogChannel.send('🔄 Daily message counts have been reset!');
   }
-}, 24 * 60 * 60 * 1000);
+}, 24 * 60 * 60 * 1000); // Every 24 hours
 
-// ------------ READY AND LOGIN ------------
+// ---------- READY & LOGIN ----------
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
+
 client.login(TOKEN);
