@@ -1,4 +1,4 @@
-// ---------- PART 1: CORE SETUP ----------
+// ---------- PART 1: CORE SETUP FIXED ----------
 const { 
   Client, 
   GatewayIntentBits, 
@@ -11,7 +11,7 @@ const {
 const express = require('express');
 require('dotenv').config();
 
-// ---------- ENVIRONMENT ----------
+// ---------- ENVIRONMENT VARIABLES ----------
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const PREFIX = process.env.PREFIX || '!';
@@ -38,11 +38,12 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
+// ---------- EXPRESS SERVER FOR RENDER ----------
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 
-// ---------- FIXED FOR RENDER ----------
-const PORT = process.env.PORT || 3000;
+// ✅ IMPORTANT: Use only Render's PORT
+const PORT = process.env.PORT; 
 app.listen(PORT, () => console.log(`✅ Express active on port ${PORT}`));
 
 // ---------- GLOBAL VARIABLES ----------
