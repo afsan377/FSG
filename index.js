@@ -40,7 +40,10 @@ const client = new Client({
 
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
-app.listen(3000, () => console.log('✅ Express active on port 3000'));
+
+// ---------- FIXED FOR RENDER ----------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Express active on port ${PORT}`));
 
 // ---------- GLOBAL VARIABLES ----------
 const giveaways = new Map(); // active giveaways
