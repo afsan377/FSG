@@ -3,14 +3,14 @@ const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, 
 const express = require('express');
 require('dotenv').config();
 
-// Env/config
+// ---- CONFIGURATION: Set these in your .env file ----------
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = process.env.PORT || 3000;
 const GIVEAWAY_CHANNELS = process.env.GIVEAWAY_CHANNELS ? process.env.GIVEAWAY_CHANNELS.split(',') : [];
 const BANLOG_CHANNEL = process.env.BANLOG_CHANNEL;
 const MESSAGELOG_CHANNEL = process.env.MESSAGELOG_CHANNEL;
-const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID;
+const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID; // You can leave empty: bot will auto-create
 
 const client = new Client({
   intents: [
@@ -23,17 +23,16 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// Express keepalive (prevents Render from idling)
+client.commands = new Collection();
+const giveaways = new Map();
+const messages = {};
+
+// --- Keepalive server for Render & others ---
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 app.listen(PORT, () => console.log(`✅ Express active on port ${PORT}`));
 
-// Core collections and state
-client.commands = new Collection();
-const giveaways = new Map();
-const messages = {}; // { [guildId]: { [userId]: { daily, total } } }
-
-// --- Slash Commands Definitions & Handlers ---
+// --- Slash Commands (Giveaway, Moderation, Leaderboard) ---
 
 client.commands.set('giveaway', {
   data: new SlashCommandBuilder()
@@ -48,14 +47,12 @@ client.commands.set('giveaway', {
     }
     const prize = interaction.options.getString('prize');
     const duration = interaction.options.getInteger('duration');
-
     const embed = new EmbedBuilder()
       .setTitle('🎉 Giveaway!')
       .setDescription(`Prize: **${prize}**
 React to enter!`)
       .setFooter({ text: `Ends in ${duration} minutes` })
       .setColor('Random');
-
     const msg = await interaction.channel.send({ embeds: [embed] });
     await msg.react('🎁');
     giveaways.set(msg.id, {
@@ -65,7 +62,7 @@ React to enter!`)
       prize,
       endTime: Date.now() + duration * 60 * 1000
     });
-    interaction.reply({ content: `✅ Giveaway started for **${prize}**!`, ephemeral: true });
+    await interaction.reply({ content: `✅ Giveaway started for **${prize}**!`, ephemeral: true });
 
     setTimeout(() => {
       const giveaway = giveaways.get(msg.id);
@@ -100,7 +97,7 @@ client.commands.set('ban', {
     await member.ban({ reason });
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`✅ ${target.tag} was banned by ${interaction.user.tag} | Reason: ${reason}`);
-    interaction.reply({ content: `✅ ${target.tag} has been banned.`, ephemeral: true });
+    await interaction.reply({ content: `✅ ${target.tag} has been banned.`, ephemeral: true });
   }
 });
 
@@ -120,7 +117,7 @@ client.commands.set('kick', {
     await member.kick(reason);
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`✅ ${target.tag} was kicked by ${interaction.user.tag} | Reason: ${reason}`);
-    interaction.reply({ content: `✅ ${target.tag} has been kicked.`, ephemeral: true });
+    await interaction.reply({ content: `✅ ${target.tag} has been kicked.`, ephemeral: true });
   }
 });
 
@@ -140,7 +137,7 @@ client.commands.set('mute', {
     await member.roles.add(muteRole);
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`🔇 ${target.tag} was muted by ${interaction.user.tag} for ${duration} minutes`);
-    interaction.reply({ content: `✅ ${target.tag} has been muted for ${duration} minutes.`, ephemeral: true });
+    await interaction.reply({ content: `✅ ${target.tag} has been muted for ${duration} minutes.`, ephemeral: true });
     setTimeout(async () => {
       await member.roles.remove(muteRole);
       if (logChannel) logChannel.send(`🔊 ${target.tag} has been unmuted after ${duration} minutes.`);
@@ -161,7 +158,7 @@ client.commands.set('unmute', {
     if (muteRole) await member.roles.remove(muteRole);
     const logChannel = interaction.guild.channels.cache.get(BANLOG_CHANNEL);
     if (logChannel) logChannel.send(`🔊 ${target.tag} was unmuted by ${interaction.user.tag}`);
-    interaction.reply({ content: `✅ ${target.tag} has been unmuted.`, ephemeral: true });
+    await interaction.reply({ content: `✅ ${target.tag} has been unmuted.`, ephemeral: true });
   }
 });
 
@@ -185,17 +182,11 @@ client.commands.set('leaderboard', {
       .setTitle('📊 Message Leaderboard')
       .setDescription(desc)
       .setColor('Random');
-    interaction.reply({ embeds: [embed] });
+    await interaction.reply({ embeds: [embed] });
   }
 });
 
-// --- Event Handlers ---
-
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
-
-// Interaction handling (fix for slash commands)
+// ------------ SLASH COMMAND HANDLER (crucial for working bot!) ----------------
 client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
   const command = client.commands.get(interaction.commandName);
@@ -213,7 +204,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Giveaway entry tracking by reaction
+// ------------ GIVEAWAY REACTION TRACKING ------------
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch();
@@ -224,7 +215,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
     giveaway.entries.push(user.id);
   }
 });
-
 client.on('messageReactionRemove', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch();
@@ -234,7 +224,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
   giveaway.entries = giveaway.entries.filter(id => id !== user.id);
 });
 
-// Message counting for leaderboard
+// ------------ MESSAGE LOGGING & TRACKING ------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   const guildId = message.guild.id;
@@ -247,7 +237,7 @@ client.on('messageCreate', async (message) => {
   if (logChannel) logChannel.send(`📝 ${message.author.tag} sent a message in ${message.channel}`);
 });
 
-// Daily reset of message counts
+// ------------ DAILY RESET ------------
 setInterval(() => {
   for (const guildId in messages) {
     for (const userId in messages[guildId]) {
@@ -262,5 +252,8 @@ setInterval(() => {
   }
 }, 24 * 60 * 60 * 1000);
 
-// Finally, login to Discord
+// ------------ READY AND LOGIN ------------
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+});
 client.login(TOKEN);
