@@ -1,59 +1,24 @@
-// ---------- PART 1: CORE SETUP FIXED ----------
-const { 
-  Client, 
-  GatewayIntentBits, 
-  Partials, 
-  EmbedBuilder, 
-  PermissionsBitField, 
-  Collection, 
-  SlashCommandBuilder 
-} = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, Collection, SlashCommandBuilder } = require('discord.js');
 const express = require('express');
 require('dotenv').config();
 
-// ---------- ENVIRONMENT VARIABLES ----------
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
-const PREFIX = process.env.PREFIX || '!';
-const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID;
-const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID;
-const MOD_ROLE_ID = process.env.MOD_ROLE_ID;
-const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
-const MUTE_ROLE_ID = process.env.MUTE_ROLE_ID;
-const BANLOG_CHANNEL = process.env.BANLOG_CHANNEL;
-const MESSAGELOG_CHANNEL = process.env.MESSAGELOG_CHANNEL;
-const GIVEAWAY_CHANNELS = process.env.GIVEAWAY_CHANNELS
-  ? process.env.GIVEAWAY_CHANNELS.split(',')
-  : [];
 
-// ---------- CLIENT SETUP ----------
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMessageReactions
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// ---------- EXPRESS SERVER FOR RENDER ----------
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 
-// ✅ IMPORTANT: Use only Render's PORT
-const PORT = process.env.PORT; 
+const PORT = process.env.PORT;
 app.listen(PORT, () => console.log(`✅ Express active on port ${PORT}`));
 
-// ---------- GLOBAL VARIABLES ----------
-const giveaways = new Map(); // active giveaways
-const messages = {}; // message counts { guildId: { userId: { daily, total } } }
+client.once('ready', () => console.log(`✅ Logged in as ${client.user.tag}`));
 
-// ---------- BOT READY ----------
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
+client.login(TOKEN);
 // ---------- PART 2: GIVEAWAY COMMAND ----------
 client.commands = new Collection();
 
