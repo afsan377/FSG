@@ -1,22 +1,18 @@
-const { REST, Routes } = require('discord.js');
-const fs = require('fs');
+const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 require('dotenv').config();
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
-const commands = [];
-
-// Read your index.js to extract command data
-const { SlashCommandBuilder } = require('discord.js');
-
-// Here’s a simple example — add your actual commands here
-commands.push(
+const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Replies with Pong!'),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Show leaderboard'),
-  new SlashCommandBuilder().setName('ban').setDescription('Ban a user')
-).map(cmd => cmd.toJSON());
+  new SlashCommandBuilder().setName('ban').setDescription('Ban a user'),
+  new SlashCommandBuilder().setName('unban').setDescription('Unban a user'),
+  new SlashCommandBuilder().setName('mute').setDescription('Mute a member'),
+  new SlashCommandBuilder().setName('unmute').setDescription('Unmute a member')
+].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
