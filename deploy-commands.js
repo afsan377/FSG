@@ -1,36 +1,36 @@
 const { REST, Routes } = require('discord.js');
 const fs = require('fs');
-const path = require('path');
 require('dotenv').config();
 
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+
 const commands = [];
-const foldersPath = path.join(__dirname, 'commands');
-const commandFolders = fs.readdirSync(foldersPath);
 
-for (const folder of commandFolders) {
-    const commandsPath = path.join(foldersPath, folder);
-    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-    for (const file of commandFiles) {
-        const command = require(path.join(commandsPath, file));
-        if ('data' in command && 'execute' in command) {
-            commands.push(command.data.toJSON());
-        } else {
-            console.log(`[WARNING] Command at ${file} missing "data" or "execute".`);
-        }
-    }
-}
+// Read your index.js to extract command data
+const { SlashCommandBuilder } = require('discord.js');
 
-const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+// Here’s a simple example — add your actual commands here
+commands.push(
+  new SlashCommandBuilder().setName('ping').setDescription('Replies with Pong!'),
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Show leaderboard'),
+  new SlashCommandBuilder().setName('ban').setDescription('Ban a user')
+).map(cmd => cmd.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-    try {
-        console.log(`Registering ${commands.length} commands...`);
-        const data = await rest.put(
-            Routes.applicationCommands(process.env.CLIENT_ID),
-            { body: commands },
-        );
-        console.log(`✅ Successfully registered ${data.length} commands.`);
-    } catch (error) {
-        console.error(error);
-    }
+  try {
+    console.log('🚀 Starting slash command deployment...');
+
+    await rest.put(
+      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+      { body: commands },
+    );
+
+    console.log('✅ Slash commands deployed successfully!');
+  } catch (error) {
+    console.error('❌ Error deploying commands:', error);
+  }
 })();
