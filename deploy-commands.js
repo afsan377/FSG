@@ -1,26 +1,20 @@
+// deploy-commands.js
 import 'dotenv/config';
-import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { REST, Routes } from 'discord.js';
+import fs from 'fs';
+import path from 'path';
 
-console.log("🧠 Loaded env:", {
-  TOKEN: process.env.TOKEN ? "✅ Present" : "❌ Missing",
-  CLIENT_ID: process.env.CLIENT_ID ? "✅ Present" : "❌ Missing",
-  GUILD_ID: process.env.GUILD_ID ? "✅ Present" : "❌ Missing"
-});
+// Load environment variables
+const { TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
-
-if (!TOKEN) {
-  console.error("❌ TOKEN not found. Check Render environment variables or .env file!");
+if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
+  console.error('❌ TOKEN, CLIENT_ID, or GUILD_ID missing in environment variables!');
   process.exit(1);
 }
 
-const commands = [
-  new SlashCommandBuilder().setName('ping').setDescription('Replies with Pong!'),
-  new SlashCommandBuilder().setName('leaderboard').setDescription('Show leaderboard'),
-  new SlashCommandBuilder().setName('ban').setDescription('Ban a user')
-].map(cmd => cmd.toJSON());
+// Load commands from index.js commands collection
+import index from './index.js';
+const commandsArray = Array.from(index.commands.values()).map(cmd => cmd.data.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
@@ -29,7 +23,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.log('🚀 Starting slash command deployment...');
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
+      { body: commandsArray }
     );
     console.log('✅ Slash commands deployed successfully!');
   } catch (error) {
